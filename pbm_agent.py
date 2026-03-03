@@ -1,28 +1,69 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
+import io
+import requests
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
+from pypdf import PdfReader
 
 from settings import KNOWLEDGE_DB_PATH
 
 # --------------------------------------------------
-# Setup: Models & Environment
+# Setup: Models, Tools & Environment
 # --------------------------------------------------
 
 load_dotenv()
 
-# Orchestrated models
-small_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-sql_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-report_llm = ChatOpenAI(model="gpt-4.1", temperature=0)
-judge_llm = ChatOpenAI(model="gpt-4.1", temperature=0)
-deep_research_llm = ChatOpenAI(model="gpt-4.1", temperature=0.1)
+# Single core model used for all agent reasoning
+core_llm = ChatOpenAI(model="gpt-4.1", temperature=0)
+
+
+# --------------------------------------------------
+# Formatter prompt for executive-style output
+# --------------------------------------------------
+
+FORMAT_PROMPT = """
+You are a healthcare analytics assistant.
+
+Rewrite the provided analysis into a clean, structured,
+executive-friendly Markdown format using:
+
+- Clear section headers
+- Bullet points
+- Short paragraphs
+- Logical grouping
+- No repetition
+- Professional tone
+
+You MUST output valid Markdown and you MUST use
+exactly these section headings, each starting with "## ":
+
+## Clinical Summary
+## Key Findings
+## Data Limitations
+## Recommended Actions
+## Final Conclusion
+
+Formatting rules (VERY IMPORTANT):
+- Start each section header with "## " exactly, followed by the section name.
+- Put a blank line after each heading.
+- Put blank lines between paragraphs.
+- Use bullet lists under the *Findings*, *Limitations*, and *Recommended Actions* sections.
+- Do not add any sign-off, author name, or date footer.
+- Do not add any extra sections before or after these.
+
+Analysis to format:
+{analysis}
+"""
 
 
 # --------------------------------------------------
@@ -34,8 +75,9 @@ class AgentState(TypedDict, total=False):
     route: Literal["DIRECT_LLM", "HYBRID_RAG"]
     sql_query: str
     db_result: Optional[List[Dict[str, Any]]]
+    doc_text: Optional[str]
     web_context: Optional[str]
-    answer: str
+    answer: str  # current best answer / analysis (may be unformatted before formatter)
     sources: List[str]
     confidence: float
     reasoning: str
@@ -49,6 +91,66 @@ class AgentOutput:
     sources: List[str]
     confidence: float
     reasoning: str
+
+
+# --------------------------------------------------
+# Tool implementations (docs + simple web scraping)
+# --------------------------------------------------
+
+def _fetch_and_parse_document(url: str) -> str:
+    """
+    Fetch a PDF or HTML document and return extracted text (truncated for safety).
+    """
+    resp = requests.get(url, timeout=20)
+    resp.raise_for_status()
+
+    content_type = resp.headers.get("Content-Type", "").lower()
+    text: str
+
+    if "pdf" in content_type or url.lower().endswith(".pdf"):
+        reader = PdfReader(io.BytesIO(resp.content))
+        pages_text = []
+        for page in reader.pages[:10]:  # cap pages for latency
+            pages_text.append(page.extract_text() or "")
+        text = "\n\n".join(pages_text)
+    else:
+        soup = BeautifulSoup(resp.text, "html.parser")
+        # crude main-text extraction: drop script/style, join visible text
+        for tag in soup(["script", "style", "noscript"]):
+            tag.decompose()
+        text = " ".join(t.strip() for t in soup.get_text(separator=" ").split())
+
+    # Truncate to protect token budget
+    if len(text) > 10000:
+        text = text[:10000]
+    return text
+
+
+def _scrape_web_page(url: str) -> str:
+    """
+    Scrape a general web page and return its main textual content (truncated).
+    """
+    resp = requests.get(url, timeout=20)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    text = " ".join(t.strip() for t in soup.get_text(separator=" ").split())
+    if len(text) > 10000:
+        text = text[:10000]
+    return text
+
+
+@tool
+def fetch_and_parse_document(url: str) -> str:
+    """Fetch a PDF or HTML document from a URL and return extracted text (truncated)."""
+    return _fetch_and_parse_document(url)
+
+
+@tool
+def scrape_web_page(url: str) -> str:
+    """Scrape a web page and return its main textual content (truncated)."""
+    return _scrape_web_page(url)
 
 
 # --------------------------------------------------
@@ -104,7 +206,7 @@ Decide whether this query should be answered:
 
 Return ONLY one word: DIRECT_LLM or HYBRID_RAG.
 """
-    route = small_llm.invoke(prompt).content.strip().upper()
+    route = core_llm.invoke(prompt).content.strip().upper()
     if route not in ("DIRECT_LLM", "HYBRID_RAG"):
         route = "DIRECT_LLM"
     return {"route": route, "retry_count": state.get("retry_count", 0), "sources": state.get("sources", [])}
@@ -121,15 +223,35 @@ def route_after_router(state: AgentState) -> Literal["DIRECT_LLM", "HYBRID_RAG"]
 def direct_llm_agent(state: AgentState) -> Dict[str, Any]:
     query = state["query"]
     prompt = f"""
-You are a helpful assistant.
-Answer the user's question concisely but clearly.
+You are an expert analyst.
+Decide first whether the user is asking for:
+- A casual greeting or small-talk question (e.g., "hello", "hi", "what are you doing?", "how are you?", "thanks").
+- Or a substantive question that deserves an in-depth analysis or report.
+
+If it is a casual greeting / small-talk query:
+- Respond in a friendly, conversational tone.
+- Keep the response SHORT (1–3 sentences).
+- Do NOT write a report, headings, or long sections.
+
+If it is a substantive question:
+Write an in-depth, well-structured report in response to the user's query.
+
+Formatting requirements (very important) for substantive questions:
+- Use Markdown headings (##, ###) for sections.
+- Put a blank line after each heading.
+- Put blank lines between paragraphs.
+- Use bullet lists where helpful, with a blank line before and after each list.
+- Do not add any sign-off, author name, or "Prepared by" / date footer.
+- Do not reference this instruction block or say that you are an AI model.
 
 User query:
 \"\"\"{query}\"\"\"
 
-Respond with just the answer.
+Respond with either:
+- A short conversational reply (for casual queries), OR
+- A full report (for substantive queries).
 """
-    answer = report_llm.invoke(prompt).content.strip()
+    answer = core_llm.invoke(prompt).content.strip()
 
     # Simple early-exit heuristic: short questions, no obvious analytics language.
     simple = len(query) < 120 and not any(
@@ -177,7 +299,7 @@ Rules:
 
 Return ONLY the SQL query, nothing else.
 """
-    sql = sql_llm.invoke(prompt).content.strip()
+    sql = core_llm.invoke(prompt).content.strip()
     return {"sql_query": sql}
 
 
@@ -265,22 +387,27 @@ Rules:
 
 Return ONLY the corrected SQL, nothing else.
 """
-        repaired_sql = sql_llm.invoke(repair_prompt).content.strip()
+        repaired_sql = core_llm.invoke(repair_prompt).content.strip()
         rows = _execute_sql(repaired_sql)
         return {"db_result": rows, "sql_query": repaired_sql, "retry_count": retry_count + 1}
 
 
 # --------------------------------------------------
-# Report Agent — Grounded Answer from DB
+# Report Agent — Grounded Analysis from DB
 # --------------------------------------------------
 
 def report_agent(state: AgentState) -> Dict[str, Any]:
     query = state["query"]
     db_result = state.get("db_result") or []
+    doc_text = state.get("doc_text") or ""
 
     preview_rows = json.dumps(db_result[:20], indent=2, default=str)
+    doc_snippet = doc_text[:2000] if doc_text else ""
     prompt = f"""
-You are a report-writing agent that must ground all answers in the provided database rows.
+You are a PBM clinical analytics AI.
+
+Your task is to write a detailed internal analysis (not yet formatted for executives)
+based ONLY on the data and document context provided.
 
 User query:
 \"\"\"{query}\"\"\"
@@ -288,44 +415,30 @@ User query:
 Database rows (JSON, up to 20):
 {preview_rows}
 
-Write a clear, structured answer that directly references what is present in the data.
-If the data is insufficient to fully answer, say so explicitly and do not invent rows or values.
+Additional document context (may be empty, truncated):
+\"\"\"{doc_snippet}\"\"\"
+
+Write a thorough analytical narrative that:
+- Explains what the data shows about utilization, prescribing patterns, and cost.
+- Connects any clinical guidance from the document (if provided) to the observed or hypothetical claims.
+- Explicitly calls out important caveats and data gaps.
+- Uses plain paragraphs and inline lists; do NOT worry about headings, bullets, or final presentation.
+
+This output is an intermediate analysis that will be passed to a separate formatter.
+Do not add any sign-off, author name, or date footer.
 """
-    answer = report_llm.invoke(prompt).content.strip()
+    answer = core_llm.invoke(prompt).content.strip()
+
+    sources = set(state.get("sources", []))
+    if db_result:
+        sources.add("database")
+    if doc_snippet:
+        sources.add("doc")
 
     return {
         "answer": answer,
-        "sources": list(sorted(set(state.get("sources", []) + ["database"]))),
+        "sources": list(sorted(sources)),
     }
-
-
-# --------------------------------------------------
-# Web Retrieval Agent (Tavily)
-# --------------------------------------------------
-
-try:
-    from tavily import TavilyClient  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    TavilyClient = None  # type: ignore
-
-
-def web_retrieval_agent(state: AgentState) -> Dict[str, Any]:
-    if TavilyClient is None:
-        # Web is unavailable; keep existing state
-        return {"web_context": None}
-
-    client = TavilyClient()
-    query = state["query"]
-
-    try:
-        result = client.search(query=query, max_results=5)
-        # Tavily returns JSON; keep a compact text representation
-        web_context = json.dumps(result, indent=2, default=str)
-    except Exception:
-        web_context = None
-
-    sources = list(sorted(set(state.get("sources", []) + (["web"] if web_context else []))))
-    return {"web_context": web_context, "sources": sources}
 
 
 # --------------------------------------------------
@@ -364,7 +477,7 @@ Answer:
 Context (JSON):
 {json.dumps(context_snippet, indent=2, default=str)}
 """
-    raw = judge_llm.invoke(prompt).content.strip()
+    raw = core_llm.invoke(prompt).content.strip()
     try:
         parsed = json.loads(raw)
         confidence = float(parsed.get("confidence", 0.0))
@@ -377,10 +490,8 @@ Context (JSON):
 
 
 def route_after_judge(state: AgentState) -> Literal["END", "WEB"]:
-    # Early exit: return answer if reasonably confident
-    if state.get("confidence", 0.0) >= 0.8:
-        return "END"
-    return "WEB"
+    # Web augmentation is disabled in this version; always end after judging.
+    return "END"
 
 
 def route_after_web(state: AgentState) -> Literal["END", "DEEP_RESEARCH"]:
@@ -391,7 +502,7 @@ def route_after_web(state: AgentState) -> Literal["END", "DEEP_RESEARCH"]:
 
 
 # --------------------------------------------------
-# Deep Research Agent — Escalation Layer
+# Deep Research Agent — Escalation Layer (improves analysis)
 # --------------------------------------------------
 
 def deep_research_agent(state: AgentState) -> Dict[str, Any]:
@@ -407,19 +518,27 @@ def deep_research_agent(state: AgentState) -> Dict[str, Any]:
     }
 
     prompt = f"""
-You are a deep research agent that improves an existing answer using iterative reasoning.
+You are a deep research agent that revises and expands an existing answer using iterative reasoning.
 
 You will receive:
 - The original user query
 - The current best answer
 - Database rows
-- Web search context
+- Optional external context
 
 Your job:
-- Carefully re-check the data and web context
-- Strengthen the answer
-- Clarify uncertainty and explicitly state what is unknown
-- Keep the answer grounded; no fabrications.
+- Carefully re-check the data and context.
+- Produce a substantially more detailed, better organized, and more insightful report.
+- Add missing nuance, caveats, and edge cases.
+- Clarify uncertainty and explicitly state what is unknown.
+- Keep the answer grounded; no fabrications beyond what is reasonably implied by the data and context.
+
+Formatting requirements (very important):
+- Use Markdown headings (##, ###) for sections.
+- Put a blank line after each heading.
+- Put blank lines between paragraphs.
+- Use bullet lists where helpful, with a blank line before and after each list.
+- Do not add any sign-off, author name, or "Prepared by" / date footer.
 
 User query:
 \"\"\"{query}\"\"\"
@@ -427,15 +546,84 @@ User query:
 Context (JSON):
 {json.dumps(context_snippet, indent=2, default=str)}
 
-Write the improved final answer.
+Write the improved, in-depth analytical narrative (still not formatted for executives).
 """
-    improved_answer = deep_research_llm.invoke(prompt).content.strip()
+    improved_answer = core_llm.invoke(prompt).content.strip()
 
+    sources = set(state.get("sources", []))
+    sources.add("database")
     return {
         "answer": improved_answer,
         "escalated_to_research": True,
-        "sources": list(sorted(set(state.get("sources", []) + ["database", "web"]))),
+        "sources": list(sorted(sources)),
     }
+
+
+# --------------------------------------------------
+# Formatter Agent — Executive-Friendly Structure
+# --------------------------------------------------
+
+def formatter_agent(state: AgentState) -> Dict[str, Any]:
+    """
+    Take the current analytical answer and rewrite it into a
+    clean, executive-friendly format using FORMAT_PROMPT.
+    """
+    raw_analysis = state.get("answer", "") or ""
+    if not raw_analysis.strip():
+        return {}
+
+    prompt = FORMAT_PROMPT.format(analysis=raw_analysis)
+    formatted = core_llm.invoke(prompt).content.strip()
+
+    # Post-process to enforce Markdown headings even if the model
+    # forgets to include the leading "## ".
+    sections = [
+        "Clinical Summary",
+        "Key Findings",
+        "Data Limitations",
+        "Recommended Actions",
+        "Final Conclusion",
+    ]
+    for name in sections:
+        pattern = rf"(^|\n)\s*{name}\s*\n"
+        replacement = rf"\1## {name}\n\n"
+        formatted = re.sub(pattern, replacement, formatted)
+
+    # Ensure the first section starts correctly if the model deviated.
+    if "## Clinical Summary" not in formatted and "Clinical Summary" in formatted:
+        formatted = formatted.replace(
+            "Clinical Summary",
+            "## Clinical Summary\n\n",
+            1,
+        )
+
+    return {"answer": formatted}
+
+
+# --------------------------------------------------
+# Doc pre-processing node
+# --------------------------------------------------
+
+def doc_tool_node(state: AgentState) -> Dict[str, Any]:
+    """
+    Lightweight pre-processing node:
+    - Detects URLs in the query
+    - For the first URL, fetches and parses document or web page text
+    - Stores resulting text in shared state as `doc_text`
+    """
+    query = state.get("query", "")
+    url_match = re.search(r"https?://\S+", query)
+    if not url_match:
+        return {}
+    url = url_match.group(0).strip().rstrip('\"\'')
+    try:
+        if url.lower().endswith(".pdf"):
+            text = _fetch_and_parse_document(url)
+        else:
+            text = _scrape_web_page(url)
+    except Exception:
+        text = ""
+    return {"doc_text": text}
 
 
 # --------------------------------------------------
@@ -444,17 +632,26 @@ Write the improved final answer.
 
 builder = StateGraph(AgentState)
 
+builder.add_node("DOC_TOOL", doc_tool_node)
 builder.add_node("ROUTER", router_agent)
 builder.add_node("DIRECT_LLM", direct_llm_agent)
 builder.add_node("SQL_AGENT", sql_agent)
 builder.add_node("SQL_GUARDRAIL", sql_guardrail_node)
 builder.add_node("SQL_EXECUTE", sql_execute_node)
 builder.add_node("REPORT", report_agent)
+builder.add_node("FORMATTER", formatter_agent)
 builder.add_node("JUDGE", judge_agent)
-builder.add_node("WEB", web_retrieval_agent)
 builder.add_node("DEEP_RESEARCH", deep_research_agent)
 
-builder.set_entry_point("ROUTER")
+builder.set_entry_point("DOC_TOOL")
+
+builder.add_conditional_edges(
+    "DOC_TOOL",
+    lambda state: "ROUTER",
+    {
+        "ROUTER": "ROUTER",
+    },
+)
 
 builder.add_conditional_edges(
     "ROUTER",
@@ -477,26 +674,9 @@ builder.add_conditional_edges(
 builder.add_edge("SQL_AGENT", "SQL_GUARDRAIL")
 builder.add_edge("SQL_GUARDRAIL", "SQL_EXECUTE")
 builder.add_edge("SQL_EXECUTE", "REPORT")
-builder.add_edge("REPORT", "JUDGE")
-
-builder.add_conditional_edges(
-    "JUDGE",
-    route_after_judge,
-    {
-        "END": END,
-        "WEB": "WEB",
-    },
-)
-
-builder.add_conditional_edges(
-    "WEB",
-    route_after_web,
-    {
-        "END": END,
-        "DEEP_RESEARCH": "DEEP_RESEARCH",
-    },
-)
-
+builder.add_edge("REPORT", "FORMATTER")
+builder.add_edge("FORMATTER", "JUDGE")
+builder.add_edge("JUDGE", END)
 builder.add_edge("DEEP_RESEARCH", END)
 
 graph = builder.compile()

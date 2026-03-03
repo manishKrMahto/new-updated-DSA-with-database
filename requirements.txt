@@ -4,13 +4,16 @@ flask>=3.0.0
 # Agentic backend: LangGraph + OpenAI
 langchain-openai>=0.2.0
 langgraph>=0.2.0
+langchain-core>=0.2.0
 
 # Data and config
 pandas>=2.0.0
 python-dotenv>=1.0.0
 
-# Optional web retrieval
-tavily-python>=0.3.0
+# Tools: docs + web scraping
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+pypdf>=4.0.0
 
 # Legacy (unused by current backend but kept to avoid breaking envs)
 django>=5.0,<6.0

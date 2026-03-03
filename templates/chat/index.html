@@ -25,14 +25,21 @@
       <main class="flex-1 flex flex-col">
         <!-- Header -->
         <header class="px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-2">
-          <h2 class="text-lg font-semibold">Chat</h2>
           <div class="flex items-center gap-2">
+            <!-- Sidebar toggle icon button (top-corner style like ChatGPT). No 'Chat' label. -->
             <button
               id="toggle-history-btn"
-              class="text-sm px-3 py-1.5 rounded-full border border-gray-300 hover:bg-gray-100"
+              type="button"
+              class="inline-flex items-center justify-center w-9 h-9 rounded-full border border-gray-300 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              title="Toggle conversation list"
             >
-              Toggle history
+              <!-- simple list/sidebar icon -->
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" class="w-4 h-4">
+                <path d="M4 6h16M4 12h10M4 18h7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+              </svg>
             </button>
+          </div>
+          <div class="flex items-center gap-2">
             <button
               id="new-chat-btn"
               class="text-sm px-3 py-1.5 rounded-full border border-gray-300 hover:bg-gray-100"
@@ -54,7 +61,7 @@
             <textarea
               id="message-input"
               rows="1"
-              class="flex-1 resize-none rounded-2xl border border-gray-300 px-3 py-2 text-base leading-relaxed focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              class="flex-1 resize-none rounded-2xl border border-gray-300 px-3 py-2 text-base leading-relaxed focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 max-h-64 overflow-y-auto"
               placeholder="Type your question here... (Shift+Enter for new line)"
             ></textarea>
             <button
@@ -234,14 +241,23 @@
 
       function toggleHistory() {
         const sidebar = document.getElementById("sidebar");
+        const toggleBtn = document.getElementById("toggle-history-btn");
         if (!sidebar) return;
         const isVisible = sidebar.classList.contains("md:flex");
         if (isVisible) {
           sidebar.classList.remove("md:flex");
           sidebar.classList.add("md:hidden");
+          if (toggleBtn) {
+            toggleBtn.classList.remove("bg-gray-900", "text-white");
+            toggleBtn.classList.add("border-gray-300", "text-gray-600");
+          }
         } else {
           sidebar.classList.remove("md:hidden");
           sidebar.classList.add("md:flex");
+          if (toggleBtn) {
+            toggleBtn.classList.remove("border-gray-300", "text-gray-600");
+            toggleBtn.classList.add("bg-gray-900", "text-white");
+          }
         }
       }
 
@@ -322,15 +338,13 @@
           }
         });
 
-      // Auto-resize textarea based on content
+      // Auto-resize textarea based on content (no hidden overflow)
       const messageInput = document.getElementById("message-input");
-      const maxLines = 6;
+      const maxHeightPx = 320; // allow ~8-10 lines before scrolling
       messageInput.addEventListener("input", () => {
         messageInput.style.height = "auto";
-        const lineHeight = 24; // approximate for text-base
-        const lines = messageInput.value.split("\n").length;
-        const height = Math.min(lines, maxLines) * lineHeight;
-        messageInput.style.height = `${Math.max(height, lineHeight)}px`;
+        const newHeight = Math.min(messageInput.scrollHeight, maxHeightPx);
+        messageInput.style.height = `${newHeight}px`;
       });
 
       // Handle Enter vs Shift+Enter
