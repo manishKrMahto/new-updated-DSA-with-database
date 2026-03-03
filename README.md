@@ -79,3 +79,405 @@ Then open **http://127.0.0.1:8000/** in your browser.
 - **Data-style questions** – e.g. “NSCLC claims” or “cost by drug” → agent filters claims (e.g. by diagnosis), runs analytics (e.g. avg cost, utilization by drug), and returns a short PBM-style report.
 
 Chat history is saved in the sidebar; use **New Chat** to start a new conversation. Refreshing the page or restarting the server keeps existing sessions and messages.
+
+---
+
+# Final Architecture Summary — Multi-Agent LangGraph Hybrid RAG System
+
+---
+
+# 1. Core Philosophy
+
+You are building a:
+
+**Stateful Multi-Agent Hybrid RAG System**
+
+where:
+
+* one **orchestrator agent** manages the workflow
+* specialized agents perform tasks
+* shared state flows across nodes
+* answers are grounded, validated, and traceable
+* deep research becomes an escalation mechanism
+* latency and cost are controlled via early exits
+
+---
+
+# 2. High-Level Flow
+
+```text
+User Query
+     ↓
+LangGraph Orchestrator Agent
+     ↓
+Intent Routing (small LLM + rules)
+     ↓
+Normal Processing Pipeline
+     ↓
+Evaluation Layer
+     ↓
+(If needed) Web Augmentation
+     ↓
+(If still low confidence) Deep Research Escalation
+     ↓
+Final Grounded Response
+```
+
+---
+
+# 3. Multi-Agent System Design
+
+Yes — you are correctly using a **multi-agent architecture**, but with an important principle:
+
+> Multiple specialized agents operate under ONE orchestrator using shared state.
+
+This avoids agent chaos.
+
+---
+
+## Agents in the System
+
+| Agent                   | Responsibility                  | Model       |
+| ----------------------- | ------------------------------- | ----------- |
+| **Orchestrator Agent**  | Controls workflow & transitions | GPT-4o-mini |
+| **Router Agent**        | Decide Direct vs Hybrid RAG     | GPT-4o-mini |
+| **SQL Agent**           | Generate SQL queries            | GPT-4o-mini |
+| **Report Agent**        | Generate grounded answers       | GPT-4.1     |
+| **Judge Agent**         | Confidence + reasoning          | GPT-4.1     |
+| **Web Retrieval Agent** | Tavily search                   | Tool        |
+| **Deep Research Agent** | Multi-step research             | GPT-4.1     |
+
+All agents communicate through **LangGraph state**.
+
+---
+
+# 4. Shared State Management (Fix for LOOPHOLE 7)
+
+LangGraph manages a global object:
+
+## AgentState (Single Source of Truth)
+
+```python
+AgentState = {
+    "query": "",
+    "route": "",
+    "sql_query": "",
+    "db_result": None,
+    "web_context": None,
+    "answer": "",
+    "sources": [],
+    "confidence": 0.0,
+    "reasoning": "",
+    "retry_count": 0,
+    "escalated_to_research": False
+}
+```
+
+### Benefits
+
+* no manual passing of outputs
+* easy debugging
+* retries supported
+* deep research integration clean
+* observability ready
+
+---
+
+# 5. Normal Agent Workflow
+
+## Step 1 — Hybrid Routing
+
+Router uses:
+
+* small LLM (GPT-4o-mini)
+* rule signals (numbers, schema keywords)
+
+Outputs:
+
+```text
+DIRECT_LLM
+HYBRID_RAG
+```
+
+---
+
+## Step 2A — Direct LLM Path
+
+```text
+Query → GPT-4.1 → Answer
+```
+
+### Early Exit Optimization (Latency Fix)
+
+If:
+
+* simple question
+* high certainty
+
+→ Skip judge
+→ Return immediately.
+
+This prevents unnecessary model calls.
+
+---
+
+## Step 2B — Hybrid RAG Path
+
+### SQL Retrieval Flow
+
+```text
+Query
+  ↓
+SQL Agent
+  ↓
+SQL Guardrail
+  ↓
+Execute SQLite DB
+```
+
+(SQLite used for testing → PostgreSQL later.)
+
+---
+
+### SQL Guardrail
+
+Checks:
+
+* SELECT only
+* schema validation
+* column existence
+* no destructive queries
+
+---
+
+# 6. Retry Strategy (Fix for LOOPHOLE 8)
+
+Wrapped inside try–catch logic:
+
+```text
+Execute SQL
+   ↓
+If Error:
+     retry_count += 1
+     LLM repairs SQL
+     retry once
+```
+
+Rules:
+
+* maximum 1 retry
+* prevent infinite loops
+
+---
+
+# 7. Grounded Report Generation
+
+```text
+DB Result
+   ↓
+Report Agent (GPT-4.1)
+   ↓
+Structured Answer
+```
+
+Answer MUST reference retrieved data.
+
+---
+
+# 8. Source Attribution Layer (Fix for LOOPHOLE 5)
+
+Every response includes grounding metadata:
+
+```json
+{
+  "answer": "...",
+  "sources": ["database", "web"],
+  "confidence": 0.87,
+  "reasoning": "Database covered 80% of query; web added explanation."
+}
+```
+
+### Why this matters
+
+* debugging
+* observability
+* trust
+* evaluation metrics
+* production monitoring
+
+Sources automatically appended during retrieval steps.
+
+---
+
+# 9. Evaluation Layer (Judge Agent)
+
+Judge receives:
+
+* user query
+* generated answer
+* retrieved context
+
+Outputs:
+
+* confidence score
+* reasoning
+
+---
+
+## Early Exit Strategy (Fix for LOOPHOLE 10)
+
+Skip judge if:
+
+* direct LLM path
+* short factual answer
+* structured DB query success
+* confidence heuristics high
+
+Reduces latency significantly.
+
+---
+
+# 10. Adaptive Web Augmentation
+
+If:
+
+```text
+confidence < threshold
+```
+
+Then:
+
+```text
+Web Agent → Tavily Search
+        ↓
+Merge DB + Web Context
+        ↓
+Regenerate Final Answer
+```
+
+Important:
+Web results **augment**, not replace DB facts.
+
+Sources updated:
+
+```text
+["database", "web"]
+```
+
+---
+
+# 11. Deep Research Escalation (Fix for LOOPHOLE 9)
+
+Currently user-selectable, but designed to evolve into:
+
+```text
+Very Low Confidence
+        ↓
+Auto Escalate
+        ↓
+Deep Research Agent
+```
+
+Deep research becomes:
+
+> System intelligence escalation layer.
+
+---
+
+# 12. Latency Optimization Strategy (Major Improvement)
+
+Worst-case calls reduced using:
+
+### Early Exit Rules
+
+| Condition                 | Action             |
+| ------------------------- | ------------------ |
+| Simple query              | Skip judge         |
+| High confidence DB answer | Return early       |
+| Router certainty high     | Skip fallback      |
+| Retry success             | Skip re-evaluation |
+
+Average calls drop from:
+
+```
+6 LLM calls → ~2–3 calls
+```
+
+---
+
+# 13. Database Strategy
+
+### Current
+
+* SQLite (testing)
+
+### Future (Production)
+
+```text
+PostgreSQL
+   + connection pooling
+   + concurrency safe
+   + analytics queries
+```
+
+No architecture change needed later.
+
+---
+
+# 14. Final System Architecture Diagram
+
+```text
+                     USER
+                       │
+                       ▼
+              Orchestrator Agent
+                       │
+               Router Agent
+              /             \
+       Direct LLM        Hybrid RAG
+            │                │
+            ▼                ▼
+         Answer        SQL Agent
+                             │
+                      SQL Guardrail
+                             │
+                         Database
+                             │
+                       Report Agent
+                             │
+                       Judge Agent
+                             │
+           ┌────────Pass─────────┐
+           │                     │
+           ▼                     ▼
+      Return Answer        Web Augment
+                                   │
+                                   ▼
+                           Final Answer
+                                   │
+                      (Low Confidence?)
+                                   ▼
+                       Deep Research Agent
+```
+
+---
+
+# 15. What You Have Built (Conceptually)
+
+Your system is now:
+
+**A Stateful Agentic Knowledge Engine**
+
+Not just RAG.
+
+It includes:
+
+* multi-agent orchestration
+* grounded reasoning
+* evaluation loops
+* adaptive retrieval
+* escalation intelligence
+* source attribution
+* latency control
+
+This architecture closely resembles internal enterprise AI assistants.
