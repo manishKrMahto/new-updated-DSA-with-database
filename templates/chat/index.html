@@ -6,6 +6,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+      /* Ensure Markdown headings and lists render clearly in chat bubbles */
+      .chat-prose h2 { font-size: 1rem; font-weight: 700; margin-top: 1rem; margin-bottom: 0.5rem; }
+      .chat-prose h2:first-child { margin-top: 0; }
+      .chat-prose ul { margin: 0.5rem 0; padding-left: 1.25rem; list-style-type: disc; }
+      .chat-prose li { margin: 0.25rem 0; }
+      .chat-prose p { margin: 0.5rem 0; }
+    </style>
   </head>
   <body class="bg-white text-gray-900 text-base">
     <div class="h-screen flex overflow-hidden">
@@ -91,16 +99,31 @@
         if (el) el.classList.add("hidden");
       }
 
+      var markedOptionsSet = false;
       function parseMarkdown(text) {
         if (!text) return "";
         try {
           if (window.marked && typeof window.marked.parse === "function") {
+            if (!markedOptionsSet) {
+              window.marked.setOptions({ gfm: true, breaks: true });
+              markedOptionsSet = true;
+            }
             return window.marked.parse(text);
           }
         } catch (e) {
           console.error("Markdown parse error", e);
         }
         return text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      }
+
+      function splitReportAndFooter(content) {
+        if (typeof content !== "string") return { report: "", footer: "" };
+        const idx = content.indexOf("\n\nSources:");
+        if (idx === -1) return { report: content, footer: "" };
+        return {
+          report: content.slice(0, idx).trim(),
+          footer: content.slice(idx).trim()
+        };
       }
 
       function appendMessage(role, content) {
@@ -121,10 +144,18 @@
           bubble.textContent = content;
         } else {
           bubble.classList.add("bg-gray-100", "text-gray-900", "rounded-bl-sm");
+          const { report, footer } = splitReportAndFooter(content);
           const inner = document.createElement("div");
-          inner.className = "prose prose-sm max-w-none text-gray-900 break-words";
-          inner.innerHTML = parseMarkdown(content);
+          inner.className = "chat-prose prose prose-sm max-w-none text-gray-900 break-words";
+          inner.innerHTML = parseMarkdown(report || content);
           bubble.appendChild(inner);
+          if (footer) {
+            const footerEl = document.createElement("div");
+            footerEl.className = "mt-3 pt-2 border-t border-gray-300 text-xs text-gray-500";
+            footerEl.style.whiteSpace = "pre-wrap";
+            footerEl.textContent = footer;
+            bubble.appendChild(footerEl);
+          }
         }
 
         wrapper.appendChild(bubble);

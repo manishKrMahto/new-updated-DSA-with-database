@@ -1,35 +1,31 @@
 #!/usr/bin/env python
 """
-Manage script so you can run the app with:  python manage.py runserver
-(Same style as Django's manage.py; this project uses Flask under the hood.)
+Django's command-line utility for administrative tasks.
+
+This replaces the previous Flask manage script. Use:
+
+    python manage.py runserver 8000
+
+to start the PBM Deep Research web application.
 """
-import argparse
+import os
 import sys
 
 
-def runserver(host=None, port=None, debug=True):
-    from settings import DEFAULT_PORT, HOST, DEBUG
-    from app import app
-    app.run(host=host or HOST, port=port if port is not None else DEFAULT_PORT, debug=debug)
-
-
-def main():
-    parser = argparse.ArgumentParser(description="PBM Deep Research Agent")
-    subparsers = parser.add_subparsers(dest="command", help="commands")
-
-    runserver_parser = subparsers.add_parser("runserver", help="Start the Flask dev server")
-    runserver_parser.add_argument("--host", default=None, help="Host to bind (default: 127.0.0.1; use 0.0.0.0 for network)")
-    runserver_parser.add_argument("--port", type=int, default=None, help="Port (default: from config, 8000)")
-    runserver_parser.add_argument("--no-debug", action="store_true", help="Disable debug mode")
-
-    args = parser.parse_args()
-
-    if args.command == "runserver":
-        runserver(host=args.host, port=args.port, debug=not args.no_debug)
-    else:
-        parser.print_help()
-        sys.exit(0 if not args.command else 1)
+def main() -> None:
+    """Run administrative tasks via Django's management framework."""
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "pbm_site.settings")
+    try:
+        from django.core.management import execute_from_command_line
+    except ImportError as exc:
+        raise ImportError(
+            "Couldn't import Django. Are you sure it's installed and "
+            "available on your PYTHONPATH environment variable? Did you "
+            "forget to activate a virtual environment?"
+        ) from exc
+    execute_from_command_line(sys.argv)
 
 
 if __name__ == "__main__":
     main()
+

@@ -1,5 +1,6 @@
-# Web server and API
-flask>=3.0.0
+# Web server and API (Django)
+django>=5.0,<6.0
+djangorestframework>=3.15
 
 # Agentic backend: LangGraph + OpenAI
 langchain-openai>=0.2.0
@@ -14,7 +15,3 @@ python-dotenv>=1.0.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 pypdf>=4.0.0
-
-# Legacy (unused by current backend but kept to avoid breaking envs)
-django>=5.0,<6.0
-djangorestframework>=3.15

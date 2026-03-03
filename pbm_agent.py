@@ -563,6 +563,49 @@ Write the improved, in-depth analytical narrative (still not formatted for execu
 # Formatter Agent — Executive-Friendly Structure
 # --------------------------------------------------
 
+def _normalize_report_markdown(text: str) -> str:
+    """
+    Ensure section headers use ## and bullet lists use - so the UI renders correctly.
+    """
+    if not text or not text.strip():
+        return text
+    formatted = text.strip()
+
+    # Section names that must be level-2 headers
+    sections = [
+        "Clinical Summary",
+        "Key Findings",
+        "Data Limitations",
+        "Recommended Actions",
+        "Final Conclusion",
+    ]
+    for name in sections:
+        # Already has ##
+        if f"## {name}" in formatted:
+            continue
+        # At line start (after newline or start): "Section Name" or "Section Name\n" -> "## Section Name\n\n"
+        pattern = rf"(^|\n)\s*{re.escape(name)}\s*\n"
+        replacement = rf"\1## {name}\n\n"
+        formatted = re.sub(pattern, replacement, formatted)
+        # Standalone line without trailing newline (e.g. "Key Findings" at end of buffer)
+        pattern2 = rf"(^|\n)(\s*{re.escape(name)}\s*)$"
+        replacement2 = rf"\1## {name}\n\n"
+        formatted = re.sub(pattern2, replacement2, formatted)
+
+    # Normalize bullet characters to Markdown -
+    formatted = re.sub(r"^(\s*)[•]\s+", r"\1- ", formatted, flags=re.MULTILINE)
+    formatted = re.sub(r"^(\s*)[▪]\s+", r"\1- ", formatted, flags=re.MULTILINE)
+
+    # Ensure blank line after each ## header for proper parsing
+    for name in sections:
+        formatted = re.sub(
+            rf"(## {re.escape(name)}\n)(?!\n)",
+            rf"\1\n",
+            formatted,
+        )
+    return formatted
+
+
 def formatter_agent(state: AgentState) -> Dict[str, Any]:
     """
     Take the current analytical answer and rewrite it into a
@@ -574,28 +617,7 @@ def formatter_agent(state: AgentState) -> Dict[str, Any]:
 
     prompt = FORMAT_PROMPT.format(analysis=raw_analysis)
     formatted = core_llm.invoke(prompt).content.strip()
-
-    # Post-process to enforce Markdown headings even if the model
-    # forgets to include the leading "## ".
-    sections = [
-        "Clinical Summary",
-        "Key Findings",
-        "Data Limitations",
-        "Recommended Actions",
-        "Final Conclusion",
-    ]
-    for name in sections:
-        pattern = rf"(^|\n)\s*{name}\s*\n"
-        replacement = rf"\1## {name}\n\n"
-        formatted = re.sub(pattern, replacement, formatted)
-
-    # Ensure the first section starts correctly if the model deviated.
-    if "## Clinical Summary" not in formatted and "Clinical Summary" in formatted:
-        formatted = formatted.replace(
-            "Clinical Summary",
-            "## Clinical Summary\n\n",
-            1,
-        )
+    formatted = _normalize_report_markdown(formatted)
 
     return {"answer": formatted}
 
