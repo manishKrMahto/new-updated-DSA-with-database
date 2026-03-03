@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Deep Research Agent</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  </head>
+  <body class="bg-white text-gray-900 text-base">
+    <div class="h-screen flex overflow-hidden">
+      <!-- Sidebar -->
+      <aside id="sidebar" class="hidden md:flex md:flex-col w-72 border-r border-gray-200 bg-gray-50">
+        <div class="px-4 py-4 border-b border-gray-200 flex items-center justify-between">
+          <h1 class="text-xl font-semibold">Deep Research Agent</h1>
+        </div>
+        <div class="flex-1 overflow-y-auto" id="session-list">
+          <div class="p-4 text-sm text-gray-500">
+            Conversation history will appear here.
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main chat area -->
+      <main class="flex-1 flex flex-col">
+        <!-- Header -->
+        <header class="px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-2">
+          <h2 class="text-lg font-semibold">Chat</h2>
+          <div class="flex items-center gap-2">
+            <button
+              id="toggle-history-btn"
+              class="text-sm px-3 py-1.5 rounded-full border border-gray-300 hover:bg-gray-100"
+            >
+              Toggle history
+            </button>
+            <button
+              id="new-chat-btn"
+              class="text-sm px-3 py-1.5 rounded-full border border-gray-300 hover:bg-gray-100"
+            >
+              New Chat
+            </button>
+          </div>
+        </header>
+
+        <!-- Messages (min-h-0 allows flex child to shrink and scroll) -->
+        <section id="chat-window" class="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4 bg-white">
+          <div id="chat-placeholder" class="text-center text-gray-400 text-base mt-8">
+            Ask a question to start deep research.
+          </div>
+        </section>
+        <!-- Input -->
+        <section class="border-t border-gray-200 bg-white px-4 py-3">
+          <form id="chat-form" class="max-w-3xl mx-auto flex items-end gap-2">
+            <textarea
+              id="message-input"
+              rows="1"
+              class="flex-1 resize-none rounded-2xl border border-gray-300 px-3 py-2 text-base leading-relaxed focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              placeholder="Type your question here... (Shift+Enter for new line)"
+            ></textarea>
+            <button
+              type="submit"
+              id="send-button"
+              class="inline-flex items-center justify-center rounded-full bg-emerald-600 text-white px-5 py-2.5 text-base font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Send
+            </button>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      let currentSessionId = null;
+      let selectedSessionElement = null;
+
+      function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(";").shift();
+      }
+
+      function hidePlaceholder() {
+        const el = document.getElementById("chat-placeholder");
+        if (el) el.classList.add("hidden");
+      }
+
+      function parseMarkdown(text) {
+        if (!text) return "";
+        try {
+          if (window.marked && typeof window.marked.parse === "function") {
+            return window.marked.parse(text);
+          }
+        } catch (e) {
+          console.error("Markdown parse error", e);
+        }
+        return text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      }
+
+      function appendMessage(role, content) {
+        const chatWindow = document.getElementById("chat-window");
+        hidePlaceholder();
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "flex w-full flex-shrink-0";
+        wrapper.classList.add(role === "user" ? "justify-end" : "justify-start");
+
+        const bubble = document.createElement("div");
+        bubble.className =
+          "max-w-[75%] rounded-2xl px-4 py-3 text-base overflow-hidden";
+
+        if (role === "user") {
+          bubble.classList.add("bg-emerald-600", "text-white", "rounded-br-sm");
+          bubble.style.whiteSpace = "pre-wrap";
+          bubble.textContent = content;
+        } else {
+          bubble.classList.add("bg-gray-100", "text-gray-900", "rounded-bl-sm");
+          const inner = document.createElement("div");
+          inner.className = "prose prose-sm max-w-none text-gray-900 break-words";
+          inner.innerHTML = parseMarkdown(content);
+          bubble.appendChild(inner);
+        }
+
+        wrapper.appendChild(bubble);
+        chatWindow.appendChild(wrapper);
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+      }
+
+      function showResearchingDots() {
+        hidePlaceholder();
+        const chatWindow = document.getElementById("chat-window");
+        const wrapper = document.createElement("div");
+        wrapper.className = "flex w-full justify-start";
+        wrapper.id = "researching-indicator";
+        const bubble = document.createElement("div");
+        bubble.className =
+          "max-w-[75%] rounded-2xl px-4 py-3 text-base bg-gray-100 text-gray-500 rounded-bl-sm flex items-center gap-1";
+        bubble.innerHTML =
+          'Researching <span class="flex gap-0.5"><span class="animate-bounce" style="animation-delay: 0ms">.</span><span class="animate-bounce" style="animation-delay: 150ms">.</span><span class="animate-bounce" style="animation-delay: 300ms">.</span></span>';
+        wrapper.appendChild(bubble);
+        chatWindow.appendChild(wrapper);
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+      }
+
+      function removeResearchingDots() {
+        const el = document.getElementById("researching-indicator");
+        if (el) el.remove();
+      }
+
+      function hideFinalReport() {
+        const container = document.getElementById("final-report-container");
+        if (container) {
+          container.classList.add("hidden");
+          container.innerHTML = "";
+        }
+      }
+
+      function renderHistory(messages) {
+        const chatWindow = document.getElementById("chat-window");
+        chatWindow.innerHTML =
+          '<div id="chat-placeholder" class="text-center text-gray-400 text-base mt-8 hidden">Ask a question to start deep research.</div>';
+        if (messages.length === 0) {
+          document.getElementById("chat-placeholder").classList.remove("hidden");
+        } else {
+          messages.forEach((msg) => appendMessage(msg.role, msg.content));
+        }
+        hideFinalReport();
+      }
+
+      async function loadHistory(sessionId) {
+        if (!sessionId) return;
+        currentSessionId = sessionId;
+        try {
+          const res = await fetch(`/api/chat/history/${sessionId}/`);
+          if (!res.ok) return;
+          const data = await res.json();
+          renderHistory(data);
+        } catch (e) {
+          console.error("Failed to load history", e);
+        }
+      }
+
+      function renderSessionList(sessions) {
+        const listEl = document.getElementById("session-list");
+        listEl.innerHTML = "";
+
+        if (!sessions.length) {
+          listEl.innerHTML =
+            '<div class="p-4 text-sm text-gray-500">No conversations yet.</div>';
+          return;
+        }
+
+        sessions.forEach((session) => {
+          const item = document.createElement("button");
+          item.type = "button";
+          item.dataset.sessionId = session.id;
+          item.className =
+            "w-full text-left px-4 py-3 text-sm border-b border-gray-100 hover:bg-gray-100 transition-colors";
+
+          const title = document.createElement("div");
+          title.className = "font-medium text-gray-900 truncate";
+          title.textContent =
+            session.last_message || "New conversation";
+
+          const meta = document.createElement("div");
+          meta.className = "text-xs text-gray-500 mt-0.5";
+          meta.textContent = new Date(session.created_at).toLocaleString();
+
+          item.appendChild(title);
+          item.appendChild(meta);
+
+          item.addEventListener("click", () => {
+            if (selectedSessionElement) {
+              selectedSessionElement.classList.remove("bg-gray-100");
+            }
+            item.classList.add("bg-gray-100");
+            selectedSessionElement = item;
+            loadHistory(session.id);
+          });
+
+          listEl.appendChild(item);
+        });
+      }
+
+      async function fetchSessions() {
+        try {
+          const res = await fetch("/api/chat/sessions/");
+          if (!res.ok) return;
+          const data = await res.json();
+          renderSessionList(data);
+        } catch (e) {
+          console.error("Failed to load sessions", e);
+        }
+      }
+
+      function toggleHistory() {
+        const sidebar = document.getElementById("sidebar");
+        if (!sidebar) return;
+        const isVisible = sidebar.classList.contains("md:flex");
+        if (isVisible) {
+          sidebar.classList.remove("md:flex");
+          sidebar.classList.add("md:hidden");
+        } else {
+          sidebar.classList.remove("md:hidden");
+          sidebar.classList.add("md:flex");
+        }
+      }
+
+      document
+        .getElementById("toggle-history-btn")
+        .addEventListener("click", toggleHistory);
+
+      document.getElementById("new-chat-btn").addEventListener("click", () => {
+        currentSessionId = null;
+        if (selectedSessionElement) {
+          selectedSessionElement.classList.remove("bg-gray-100");
+          selectedSessionElement = null;
+        }
+        const chatWindow = document.getElementById("chat-window");
+        chatWindow.innerHTML =
+          '<div id="chat-placeholder" class="text-center text-gray-400 text-base mt-8">Ask a question to start deep research.</div>';
+        hideFinalReport();
+      });
+
+      document
+        .getElementById("chat-form")
+        .addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const input = document.getElementById("message-input");
+          const message = input.value.trim();
+          if (!message) return;
+
+          hideFinalReport();
+          appendMessage("user", message);
+          input.value = "";
+          input.style.height = "auto";
+
+          const sendButton = document.getElementById("send-button");
+          sendButton.disabled = true;
+          showResearchingDots();
+
+          try {
+            const csrfToken = getCookie("csrftoken");
+            const res = await fetch("/api/chat/send/", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": csrfToken || "",
+              },
+              body: JSON.stringify({
+                session_id: currentSessionId,
+                message: message,
+              }),
+            });
+
+            removeResearchingDots();
+
+            if (!res.ok) {
+              appendMessage(
+                "assistant",
+                "Sorry, something went wrong while processing your request."
+              );
+            } else {
+              const data = await res.json();
+              currentSessionId = data.session_id;
+              // Use final_report when present, else agent_message (clarification or answer)
+              const assistantContent =
+                data.final_report && data.final_report.trim() !== ""
+                  ? data.final_report
+                  : (data.agent_message || "");
+              appendMessage("assistant", assistantContent);
+              fetchSessions();
+            }
+          } catch (e) {
+            console.error("Send failed", e);
+            removeResearchingDots();
+            appendMessage(
+              "assistant",
+              "Network error. Please try again in a moment."
+            );
+          } finally {
+            sendButton.disabled = false;
+          }
+        });
+
+      // Auto-resize textarea based on content
+      const messageInput = document.getElementById("message-input");
+      const maxLines = 6;
+      messageInput.addEventListener("input", () => {
+        messageInput.style.height = "auto";
+        const lineHeight = 24; // approximate for text-base
+        const lines = messageInput.value.split("\n").length;
+        const height = Math.min(lines, maxLines) * lineHeight;
+        messageInput.style.height = `${Math.max(height, lineHeight)}px`;
+      });
+
+      // Handle Enter vs Shift+Enter
+      messageInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          document.getElementById("chat-form").dispatchEvent(new Event("submit"));
+        }
+      });
+
+      // Initial load of existing sessions
+      fetchSessions();
+    </script>
+  </body>
+</html>
+
