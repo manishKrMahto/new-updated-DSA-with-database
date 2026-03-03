@@ -23,8 +23,9 @@ from settings import KNOWLEDGE_DB_PATH
 
 load_dotenv()
 
-# Single core model used for all agent reasoning
-core_llm = ChatOpenAI(model="gpt-4.1", temperature=0)
+# Single core model used for all agent reasoning.
+# gpt-4o-mini is widely available and cost‑efficient.
+core_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 
 # --------------------------------------------------
@@ -494,71 +495,6 @@ def route_after_judge(state: AgentState) -> Literal["END", "WEB"]:
     return "END"
 
 
-def route_after_web(state: AgentState) -> Literal["END", "DEEP_RESEARCH"]:
-    # If web added context but we are still low confidence, escalate to deep research
-    if state.get("confidence", 0.0) < 0.6:
-        return "DEEP_RESEARCH"
-    return "END"
-
-
-# --------------------------------------------------
-# Deep Research Agent — Escalation Layer (improves analysis)
-# --------------------------------------------------
-
-def deep_research_agent(state: AgentState) -> Dict[str, Any]:
-    query = state["query"]
-    answer = state.get("answer", "")
-    db_result = state.get("db_result") or []
-    web_context = state.get("web_context")
-
-    context_snippet = {
-        "existing_answer": answer,
-        "db_rows": db_result[:20],
-        "web_context_preview": (web_context[:4000] + "…") if web_context else None,
-    }
-
-    prompt = f"""
-You are a deep research agent that revises and expands an existing answer using iterative reasoning.
-
-You will receive:
-- The original user query
-- The current best answer
-- Database rows
-- Optional external context
-
-Your job:
-- Carefully re-check the data and context.
-- Produce a substantially more detailed, better organized, and more insightful report.
-- Add missing nuance, caveats, and edge cases.
-- Clarify uncertainty and explicitly state what is unknown.
-- Keep the answer grounded; no fabrications beyond what is reasonably implied by the data and context.
-
-Formatting requirements (very important):
-- Use Markdown headings (##, ###) for sections.
-- Put a blank line after each heading.
-- Put blank lines between paragraphs.
-- Use bullet lists where helpful, with a blank line before and after each list.
-- Do not add any sign-off, author name, or "Prepared by" / date footer.
-
-User query:
-\"\"\"{query}\"\"\"
-
-Context (JSON):
-{json.dumps(context_snippet, indent=2, default=str)}
-
-Write the improved, in-depth analytical narrative (still not formatted for executives).
-"""
-    improved_answer = core_llm.invoke(prompt).content.strip()
-
-    sources = set(state.get("sources", []))
-    sources.add("database")
-    return {
-        "answer": improved_answer,
-        "escalated_to_research": True,
-        "sources": list(sorted(sources)),
-    }
-
-
 # --------------------------------------------------
 # Formatter Agent — Executive-Friendly Structure
 # --------------------------------------------------
@@ -663,7 +599,6 @@ builder.add_node("SQL_EXECUTE", sql_execute_node)
 builder.add_node("REPORT", report_agent)
 builder.add_node("FORMATTER", formatter_agent)
 builder.add_node("JUDGE", judge_agent)
-builder.add_node("DEEP_RESEARCH", deep_research_agent)
 
 builder.set_entry_point("DOC_TOOL")
 
@@ -699,7 +634,6 @@ builder.add_edge("SQL_EXECUTE", "REPORT")
 builder.add_edge("REPORT", "FORMATTER")
 builder.add_edge("FORMATTER", "JUDGE")
 builder.add_edge("JUDGE", END)
-builder.add_edge("DEEP_RESEARCH", END)
 
 graph = builder.compile()
 

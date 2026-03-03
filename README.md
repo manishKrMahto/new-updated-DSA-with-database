@@ -118,8 +118,6 @@ Evaluation Layer
      ↓
 (If needed) Web Augmentation
      ↓
-(If still low confidence) Deep Research Escalation
-     ↓
 Final Grounded Response
 ```
 
@@ -145,7 +143,6 @@ This avoids agent chaos.
 | **Report Agent**        | Generate grounded answers       | GPT-4.1     |
 | **Judge Agent**         | Confidence + reasoning          | GPT-4.1     |
 | **Web Retrieval Agent** | Tavily search                   | Tool        |
-| **Deep Research Agent** | Multi-step research             | GPT-4.1     |
 
 All agents communicate through **LangGraph state**.
 
@@ -168,8 +165,7 @@ AgentState = {
     "sources": [],
     "confidence": 0.0,
     "reasoning": "",
-    "retry_count": 0,
-    "escalated_to_research": False
+    "retry_count": 0
 }
 ```
 
@@ -366,25 +362,7 @@ Sources updated:
 
 ---
 
-# 11. Deep Research Escalation (Fix for LOOPHOLE 9)
-
-Currently user-selectable, but designed to evolve into:
-
-```text
-Very Low Confidence
-        ↓
-Auto Escalate
-        ↓
-Deep Research Agent
-```
-
-Deep research becomes:
-
-> System intelligence escalation layer.
-
----
-
-# 12. Latency Optimization Strategy (Major Improvement)
+# 11. Latency Optimization Strategy (Major Improvement)
 
 Worst-case calls reduced using:
 
@@ -405,7 +383,7 @@ Average calls drop from:
 
 ---
 
-# 13. Database Strategy
+# 12. Database Strategy
 
 ### Current
 
@@ -424,7 +402,7 @@ No architecture change needed later.
 
 ---
 
-# 14. Final System Architecture Diagram
+# 13. Final System Architecture Diagram
 
 ```text
                      USER
@@ -455,14 +433,11 @@ No architecture change needed later.
                                    ▼
                            Final Answer
                                    │
-                      (Low Confidence?)
-                                   ▼
-                       Deep Research Agent
 ```
 
 ---
 
-# 15. What You Have Built (Conceptually)
+# 14. What You Have Built (Conceptually)
 
 Your system is now:
 
