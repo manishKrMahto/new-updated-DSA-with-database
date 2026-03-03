@@ -35,6 +35,7 @@ A **Pharmacy Benefit Manager (PBM)** style research agent with a chat UI. It use
    ```bash
    python -m venv .venv
    .venv\Scripts\activate   # Windows
+
    # source .venv/bin/activate   # macOS/Linux
    ```
 
@@ -46,17 +47,17 @@ A **Pharmacy Benefit Manager (PBM)** style research agent with a chat UI. It use
 
 3. **Environment variables**
 
-   Create a `.env` file in the project root (or set env vars):
+   Create a `.env` file or edit on `.env.example` in the project root (or set env vars):
 
    ```env
-   OPENAI_API_KEY=your-openai-api-key
+   OPENAI_API_KEY=paste_your_openai_key
    ```
 
-   Optional overrides:
 
-   - `PORT` – Server port (default: 8000)
-   - `HOST` – Bind address (default: 127.0.0.1)
-   - `FLASK_DEBUG` – Set to `true` for debug mode
+## For Table migrations
+```bash
+python manage.py migrate
+```
 
 ## Run
 
@@ -64,11 +65,6 @@ A **Pharmacy Benefit Manager (PBM)** style research agent with a chat UI. It use
 python manage.py runserver
 ```
 
-Or:
-
-```bash
-python app.py
-```
 
 Then open **http://127.0.0.1:8000/** in your browser.
 
